@@ -459,4 +459,84 @@ function GoalForm({ onAdd }) {
 
   const submit = (e) => {
     e.preventDefault();
-    if (!name || !targe
+    if (!name || !target) return alert("Enter a goal name and target");
+    onAdd({ name, target: Number(target), current: Number(current || 0), due });
+    setName("");
+    setTarget("");
+    setCurrent("");
+    setDue("");
+  };
+
+  return (
+    <form onSubmit={submit} className="grid gap-3">
+      <div>
+        <label className="block text-sm text-gray-500">Goal Name</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g., Emergency Fund"
+          className="mt-1 w-full border rounded-xl px-3 py-2"
+        />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-500">Target Amount</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          placeholder="0.00"
+          className="mt-1 w-full border rounded-xl px-3 py-2"
+        />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-500">Current Saved</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+          placeholder="0.00"
+          className="mt-1 w-full border rounded-xl px-3 py-2"
+        />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-500">Due (optional)</label>
+        <input
+          type="month"
+          value={due}
+          onChange={(e) => setDue(e.target.value)}
+          className="mt-1 w-full border rounded-xl px-3 py-2"
+        />
+      </div>
+      <button className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:brightness-110">
+        Add Goal
+      </button>
+    </form>
+  );
+}
+
+function ImportCSV({ onImport }) {
+  const handle = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => onImport(String(reader.result || ""));
+    reader.readAsText(file);
+  };
+  return (
+    <label className="px-3 py-1.5 rounded-lg border hover:bg-gray-100 flex items-center gap-1 cursor-pointer">
+      <Upload className="w-4 h-4" /> Import
+      <input type="file" accept=".csv,text/csv" onChange={handle} className="hidden" />
+    </label>
+  );
+}
+
+function cleanCSV(s) {
+  if (s == null) return "";
+  const needsQuotes = /[",\n]/.test(String(s));
+  const escaped = String(s).replaceAll('"', '""');
+  return needsQuotes ? `"${escaped}"` : escaped;
+}
