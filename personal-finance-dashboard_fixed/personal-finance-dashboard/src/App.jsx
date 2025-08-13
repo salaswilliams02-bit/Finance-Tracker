@@ -10,7 +10,7 @@ const COLORS = ["#0088FE","#00C49F","#FFBB28","#FF8042","#A28CF4","#f472b6","#34
 
 const DEFAULT_CATEGORIES = [
   "Groceries","Dining Out","Rent/Mortgage","Utilities","Transportation",
-  "Health & Fitness","Entertainment","Shopping","Travel","Other",
+  "Health & Fitness","Entertainment","Shopping","Travel","Other","Income"
 ];
 
 function loadLS(key, fallback) {
@@ -43,26 +43,34 @@ export default function App() {
   }, [transactions, filterMonth, filterCategory]);
 
   const totals = useMemo(() => {
-    const total = filteredTx.reduce((s, t) => s + Number(t.amount || 0), 0);
+    // Month sums (filtered)
+    const income = filteredTx.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const expenses = filteredTx.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const net = income - expenses;
 
+    // Category breakdown (expenses only, abs values)
     const byCatMap = new Map();
     for (const t of filteredTx) {
-      const key = t.category || "Uncategorized";
-      byCatMap.set(key, (byCatMap.get(key) || 0) + Number(t.amount || 0));
+      if (t.amount < 0) {
+        const key = t.category || "Uncategorized";
+        byCatMap.set(key, (byCatMap.get(key) || 0) + Math.abs(t.amount));
+      }
     }
     const byCat = [...byCatMap.entries()].map(([name, value]) => ({ name, value }));
 
+    // Monthly trend over all transactions (not filtered by month)
     const byMonthMap = new Map();
     for (const t of transactions) {
       const ym = t.date?.slice(0, 7) || "";
-      byMonthMap.set(ym, (byMonthMap.get(ym) || 0) + Number(t.amount || 0));
+      if (!ym) continue;
+      const entry = byMonthMap.get(ym) || { ym, income: 0, expenses: 0 };
+      if (t.amount >= 0) entry.income += t.amount;
+      else entry.expenses += Math.abs(t.amount);
+      byMonthMap.set(ym, entry);
     }
-    const byMonth = [...byMonthMap.entries()]
-      .filter(([ym]) => ym)
-      .sort()
-      .map(([ym, value]) => ({ ym, value }));
+    const byMonth = [...byMonthMap.values()].sort((a,b)=> a.ym.localeCompare(b.ym));
 
-    return { total, byCat, byMonth };
+    return { income, expenses, net, byCat, byMonth };
   }, [filteredTx, transactions]);
 
   const monthlyBudgetTarget = useMemo(
@@ -83,33 +91,44 @@ export default function App() {
   };
 
   const importCSV = (text) => {
-    // Expect headers: date,description,amount,category (header row optional)
+    // Supports: date,description,amount,category[,type]
+    // - If "type" missing: infer from sign (amount < 0 => expense; >0 => income)
     const lines = text.split(/\r?\n/).filter(Boolean);
     if (!lines.length) return;
-    const header = lines[0].toLowerCase();
-    const hasHeader = ["date", "description", "amount", "category"].every((h) =>
-      header.includes(h)
-    );
+    const cols = lines[0].toLowerCase().split(",").map(s => s.trim());
+    const hasHeader = ["date","description","amount","category"].every(h => cols.includes(h));
     const rows = hasHeader ? lines.slice(1) : lines;
+
+    const idx = (name) => cols.indexOf(name);
+    const hasType = hasHeader && idx("type") !== -1;
+
     const parsed = rows.map((line) => {
-      const parts = line.split(",").map((s) => s.trim());
-      const [date, description, amount, category] = parts;
-      return {
-        id: crypto.randomUUID(),
-        date: (date || "").slice(0, 10),
-        description: description || "",
-        amount: Math.abs(parseFloat(amount || "0")) || 0,
-        category: category || "Other",
-      };
+      const parts = line.split(",").map(s => s.trim());
+      const date = parts[hasHeader ? idx("date") : 0] || "";
+      const description = parts[hasHeader ? idx("description") : 1] || "";
+      const amtStr = parts[hasHeader ? idx("amount") : 2] || "0";
+      const category = parts[hasHeader ? idx("category") : 3] || "Other";
+      const typeRaw = hasType ? (parts[idx("type")] || "").toLowerCase() : "";
+      const amt = parseFloat(amtStr) || 0;
+      let amount = amt;
+      if (hasType) {
+        if (typeRaw.startsWith("exp")) amount = -Math.abs(amt);
+        else amount = Math.abs(amt);
+      } else {
+        // infer from sign
+        amount = amt;
+      }
+      return { id: crypto.randomUUID(), date: date.slice(0,10), description, amount, category };
     });
     setTransactions((prev) => [...parsed, ...prev]);
   };
 
   const exportCSV = () => {
-    const header = "date,description,amount,category";
-    const rows = transactions.map((t) =>
-      [t.date, cleanCSV(t.description), t.amount, cleanCSV(t.category)].join(",")
-    );
+    const header = "date,description,amount,category,type";
+    const rows = transactions.map((t) => {
+      const type = t.amount < 0 ? "expense" : "income";
+      return [t.date, cleanCSV(t.description), t.amount, cleanCSV(t.category), type].join(",");
+    });
     const blob = new Blob([header + "\n" + rows.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -126,8 +145,6 @@ export default function App() {
       setCategories(DEFAULT_CATEGORIES);
     }
   };
-
-  const monthSpend = totals.total;
 
   return (
     <div className="min-h-screen w-full bg-gray-50 text-gray-900">
@@ -178,20 +195,33 @@ export default function App() {
               ))}
             </select>
           </div>
-          <div className="p-4 bg-white rounded-2xl shadow-sm border flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">This Month&apos;s Spend</p>
-              <p className="text-2xl font-semibold">{currency.format(monthSpend)}</p>
+
+          <div className="p-4 bg-white rounded-2xl shadow-sm border">
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <p className="text-xs text-gray-500">Income</p>
+                <p className="text-lg font-semibold text-emerald-600">
+                  {currency.format(totals.income)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Spend</p>
+                <p className="text-lg font-semibold text-red-600">
+                  {currency.format(totals.expenses)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-500">Net Cash Flow</p>
+                <p className={`text-lg font-semibold ${totals.net >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  {currency.format(totals.net)}
+                </p>
+              </div>
             </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-500">Implied Monthly Target*</p>
-              <p
-                className={`text-2xl font-semibold ${
-                  monthSpend > monthlyBudgetTarget ? "text-red-600" : "text-emerald-600"
-                }`}
-              >
+            <div className="mt-3 text-xs text-gray-500 flex items-center justify-between">
+              <span>Implied Monthly Target*</span>
+              <span className={`${totals.expenses > monthlyBudgetTarget ? "text-red-600" : "text-emerald-600"} font-medium`}>
                 {currency.format(monthlyBudgetTarget || 0)}
-              </p>
+              </span>
             </div>
           </div>
         </section>
@@ -217,7 +247,7 @@ export default function App() {
 
         {/* Summary Cards */}
         <section className="grid md:grid-cols-3 gap-6">
-          <Card title="Category Breakdown">
+          <Card title="Category Breakdown (Expenses)">
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -240,7 +270,7 @@ export default function App() {
             </div>
           </Card>
 
-          <Card title="Monthly Trend">
+          <Card title="Monthly Trend (Income vs Spend)">
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={totals.byMonth}>
@@ -249,7 +279,8 @@ export default function App() {
                   <YAxis />
                   <ReTooltip formatter={(v) => currency.format(v)} />
                   <Legend />
-                  <Bar dataKey="value" name="Total Spend" />
+                  <Bar dataKey="income" name="Income" />
+                  <Bar dataKey="expenses" name="Expenses" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -301,36 +332,45 @@ export default function App() {
                   <th className="py-2 pr-3">Date</th>
                   <th className="py-2 pr-3">Description</th>
                   <th className="py-2 pr-3">Category</th>
+                  <th className="py-2 pr-3">Type</th>
                   <th className="py-2 pr-3 text-right">Amount</th>
                   <th className="py-2 pr-3"></th>
                 </tr>
               </thead>
               <tbody>
-                {filteredTx.map((t) => (
-                  <tr key={t.id} className="border-t">
-                    <td className="py-2 pr-3 whitespace-nowrap">{t.date}</td>
-                    <td className="py-2 pr-3">{t.description}</td>
-                    <td className="py-2 pr-3">{t.category}</td>
-                    <td className="py-2 pr-3 text-right font-medium">
-                      {currency.format(t.amount)}
-                    </td>
-                    <td className="py-2 pr-3 text-right">
-                      <button
-                        onClick={() => removeTransaction(t.id)}
-                        className="text-red-600 hover:underline"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredTx.map((t) => {
+                  const isIncome = t.amount >= 0;
+                  return (
+                    <tr key={t.id} className="border-t">
+                      <td className="py-2 pr-3 whitespace-nowrap">{t.date}</td>
+                      <td className="py-2 pr-3">{t.description}</td>
+                      <td className="py-2 pr-3">{t.category}</td>
+                      <td className="py-2 pr-3">
+                        <span className={`px-2 py-0.5 rounded-full text-xs ${isIncome ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                          {isIncome ? "Income" : "Expense"}
+                        </span>
+                      </td>
+                      <td className={`py-2 pr-3 text-right font-medium ${isIncome ? "text-emerald-700" : "text-red-700"}`}>
+                        {currency.format(t.amount)}
+                      </td>
+                      <td className="py-2 pr-3 text-right">
+                        <button
+                          onClick={() => removeTransaction(t.id)}
+                          className="text-red-600 hover:underline"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </section>
 
         <footer className="text-xs text-gray-500 text-center pb-8">
-          * Implied Monthly Target is simply (sum of goal targets ÷ 12). Adjust goal targets to tune this.
+          * Implied Monthly Target is (sum of goal targets ÷ 12). It’s compared to monthly <em>spend</em>.
         </footer>
       </main>
     </div>
@@ -352,6 +392,7 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(categories[0] || "Other");
   const [newCategory, setNewCategory] = useState("");
+  const [type, setType] = useState("expense"); // 'expense' | 'income'
 
   useEffect(() => {
     if (!categories.includes(category)) setCategory(categories[0] || "Other");
@@ -359,10 +400,13 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
 
   const submit = (e) => {
     e.preventDefault();
-    if (!amount || Number(amount) <= 0) return alert("Enter an amount > 0");
-    onAdd({ date, description, amount: Number(amount), category });
+    const amt = Number(amount);
+    if (!amt || amt <= 0) return alert("Enter an amount > 0");
+    const signed = type === "expense" ? -Math.abs(amt) : Math.abs(amt);
+    onAdd({ date, description, amount: signed, category });
     setDescription("");
     setAmount("");
+    setType("expense");
   };
 
   const addCat = () => {
@@ -374,7 +418,7 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
   };
 
   return (
-    <form onSubmit={submit} className="grid md:grid-cols-5 gap-3 items-end">
+    <form onSubmit={submit} className="grid md:grid-cols-6 gap-3 items-end">
       <div>
         <label className="block text-sm text-gray-500">Date</label>
         <input
@@ -389,7 +433,7 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="e.g., Whole Foods"
+          placeholder="e.g., Whole Foods or Paycheck"
           className="mt-1 w-full border rounded-xl px-3 py-2"
         />
       </div>
@@ -406,6 +450,17 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
         />
       </div>
       <div>
+        <label className="block text-sm text-gray-500">Type</label>
+        <select
+          value={type}
+          onChange={(e) => setType(e.target.value)}
+          className="mt-1 w-full border rounded-xl px-3 py-2"
+        >
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+        </select>
+      </div>
+      <div>
         <label className="block text-sm text-gray-500">Category</label>
         <div className="flex gap-2 mt-1">
           <select
@@ -420,13 +475,13 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
         </div>
       </div>
 
-      <div className="md:col-span-5 grid md:grid-cols-3 gap-3 items-end">
+      <div className="md:col-span-6 grid md:grid-cols-3 gap-3 items-end">
         <div className="md:col-span-2">
           <label className="block text-sm text-gray-500">Add a new category (optional)</label>
           <input
             value={newCategory}
             onChange={(e) => setNewCategory(e.target.value)}
-            placeholder="e.g., Subscriptions"
+            placeholder="e.g., Subscriptions or Salary"
             className="mt-1 w-full border rounded-xl px-3 py-2"
           />
         </div>
@@ -439,7 +494,7 @@ function TransactionForm({ onAdd, categories, onAddCategory }) {
         </button>
       </div>
 
-      <div className="md:col-span-5 flex justify-end">
+      <div className="md:col-span-6 flex justify-end">
         <button
           type="submit"
           className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:brightness-110"
